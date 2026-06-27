@@ -43,10 +43,11 @@ app.post('/extract', async (req, res) => {
       });
       output = result.stdout;
     } catch (error) {
-      console.error(`[EXTRACT] yt-dlp error:`, error && error.message ? error.message : error);
+      const ytDlpMessage = extractYtDlpMessage(error);
+      console.error(`[EXTRACT] yt-dlp error:`, ytDlpMessage);
       return res.status(400).json({
         success: false,
-        error: 'Could not extract media. Post may be private or deleted.'
+        error: ytDlpMessage || 'Could not extract media. Post may be private or deleted.'
       });
     }
 
@@ -223,6 +224,22 @@ function getPublicBaseUrl(req) {
   const forwardedProto = req.get('x-forwarded-proto');
   const proto = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol;
   return `${proto}://${host}`;
+}
+
+function extractYtDlpMessage(error) {
+  if (!error) {
+    return '';
+  }
+
+  if (typeof error.stderr === 'string' && error.stderr.trim()) {
+    return error.stderr.trim().split('\n').pop().trim();
+  }
+
+  if (typeof error.message === 'string' && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return String(error);
 }
 
 function isVideoInfo(info) {

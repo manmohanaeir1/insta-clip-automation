@@ -173,7 +173,7 @@ Create `.env` or `.env.local`:
 EXPO_PUBLIC_BACKEND_URL=http://localhost:3000
 
 # Production (deployed backend)
-# EXPO_PUBLIC_BACKEND_URL=https://your-backend-domain.com
+# EXPO_PUBLIC_BACKEND_URL=https://insta-clip-automation.onrender.com
 ```
 
 ## Troubleshooting
@@ -219,13 +219,12 @@ For production use:
 1. **Deploy Backend**
    ```bash
    # Push backend code to your server
-   # Install dependencies: npm install
-   # Use process manager: pm2, systemd, or Docker
+   # Use Render Docker, Docker Compose, or another container host
    ```
 
 2. **Update Environment**
    ```bash
-   EXPO_PUBLIC_BACKEND_URL=https://your-api.example.com
+   EXPO_PUBLIC_BACKEND_URL=https://insta-clip-automation.onrender.com
    ```
 
 3. **Add Security**
@@ -241,6 +240,8 @@ For production use:
      // Delete media older than 24 hours
    }, 3600000);
    ```
+
+   On Render, use the `backend/Dockerfile` so `yt-dlp` and `ffmpeg` are installed in the container.
 
 ## Design Pattern Reference
 

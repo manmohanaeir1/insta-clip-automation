@@ -36,6 +36,8 @@ This backend implements a robust pattern for auto-downloading and auto-populatin
   pip install yt-dlp
   ```
 
+For Render, the backend includes a `Dockerfile` that installs `yt-dlp` and `ffmpeg` inside the container.
+
 ### Installation
 
 1. Install dependencies:
@@ -253,6 +255,14 @@ For production deployment, add:
 3. **Caching** - Store extracted URLs temporarily
 4. **Authentication** - Add API key or JWT validation
 5. **Logging** - Send logs to external service (Sentry, etc.)
+
+## Render Deployment
+
+1. Create a new Render **Web Service**
+2. Point it at this repository
+3. Set the **Root Directory** to `backend`
+4. Use the **Docker** environment if Render asks
+5. Deploy with the included `backend/Dockerfile`
 
 ## References
 

@@ -220,7 +220,9 @@ function findMergedTransferFile(dir, token) {
 
 function getPublicBaseUrl(req) {
   const host = req.get('host');
-  return `http://${host}`;
+  const forwardedProto = req.get('x-forwarded-proto');
+  const proto = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol;
+  return `${proto}://${host}`;
 }
 
 function isVideoInfo(info) {

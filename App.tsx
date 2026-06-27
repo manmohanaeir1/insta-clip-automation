@@ -352,21 +352,23 @@ export default function App() {
                 value={caption}
               />
 
-              <View style={styles.actions}>
-                <IconButton
-                  disabled={!clip || status === 'downloading'}
-                  icon="download-outline"
-                  label={status === 'downloading' ? 'Downloading' : 'Download'}
-                  loading={status === 'downloading'}
-                  onPress={downloadCurrentClip}
-                  variant="secondary"
-                />
-                <IconButton
-                  icon="content-copy"
-                  label="Copy Caption"
-                  onPress={() => void copyCaption(caption)}
-                  variant="secondary"
-                />
+              <View style={styles.actionStack}>
+                <View style={styles.actions}>
+                  <IconButton
+                    disabled={!clip || status === 'downloading'}
+                    icon="download-outline"
+                    label={status === 'downloading' ? 'Downloading' : 'Download'}
+                    loading={status === 'downloading'}
+                    onPress={downloadCurrentClip}
+                    variant="secondary"
+                  />
+                  <IconButton
+                    icon="content-copy"
+                    label="Copy Caption"
+                    onPress={() => void copyCaption(caption)}
+                    variant="secondary"
+                  />
+                </View>
                 <IconButton
                   icon="instagram"
                   label="Open Instagram"
@@ -423,7 +425,12 @@ function IconButton({ disabled, icon, label, loading, onPress, variant }: IconBu
           color={variant === 'primary' ? '#ffffff' : '#161616'}
         />
       )}
-      <Text style={[styles.buttonText, variant === 'primary' ? styles.primaryButtonText : null]}>{label}</Text>
+      <Text
+        numberOfLines={1}
+        style={[styles.buttonText, variant === 'primary' ? styles.primaryButtonText : null]}
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -584,6 +591,9 @@ const styles = StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
+    gap: 10
+  },
+  actionStack: {
     gap: 10
   },
   button: {

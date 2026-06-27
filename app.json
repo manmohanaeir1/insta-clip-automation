@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Insta Clip",
+    "slug": "insta-clip",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "instaclip",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.instaclip.app"
+    },
+    "android": {
+      "package": "com.instaclip.app",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": false,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "www.instagram.com"
+            },
+            {
+              "scheme": "https",
+              "host": "instagram.com"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    }
+  }
+}

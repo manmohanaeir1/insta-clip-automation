@@ -21,6 +21,9 @@ export type ParsedClipUrl = {
 
 export type ClipMetadata = ParsedClipUrl & {
   caption: string;
+  ext?: string;
+  httpHeaders?: Record<string, string>;
+  mediaKind?: 'video' | 'image';
   title: string;
   thumbnailUrl?: string;
   mediaUrl?: string;

@@ -5,9 +5,10 @@ const INSTAGRAM_HOSTS = new Set(['instagram.com', 'www.instagram.com', 'm.instag
 export function normalizeInputUrl(input: string): string {
   const trimmed = input.trim();
   const firstUrl = trimmed.match(/https?:\/\/[^\s]+/i)?.[0] ?? trimmed;
+  const urlWithScheme = /^https?:\/\//i.test(firstUrl) ? firstUrl : `https://${firstUrl}`;
 
   try {
-    const url = new URL(firstUrl);
+    const url = new URL(urlWithScheme);
     url.hash = '';
 
     const trackingParams = [

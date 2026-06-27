@@ -2,23 +2,27 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Linking from 'expo-linking';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
+  Animated,
+  Easing,
+  ImageBackground,
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { downloadClip, resolveClipFromUrl, UnsupportedLocalExtractionError } from './src/services/clipResolver';
 import { copyCaption, openInstagramComposer } from './src/services/instagramShare';
 import { ClipMetadata, ClipStatus, DownloadedClip } from './src/types/clip';
+import { debugError, debugStep } from './src/lib/debugLog';
+import { rememberBackendHostFromUrl } from './src/lib/backendUrl';
 
 const exampleUrl = 'https://www.instagram.com/reel/SHORTCODE/';
 
@@ -29,12 +33,35 @@ export default function App() {
   const [clip, setClip] = useState<ClipMetadata | null>(null);
   const [downloadedClip, setDownloadedClip] = useState<DownloadedClip | null>(null);
   const [message, setMessage] = useState('Paste or share an Instagram Reel/Post link to begin.');
+  const previewReveal = useRef(new Animated.Value(0)).current;
 
   const canResolve = useMemo(() => url.trim().length > 0 && status !== 'resolving', [status, url]);
+  const captionLength = caption.trim().length;
+
+  useEffect(() => {
+    previewReveal.setValue(0);
+
+    if (!clip) {
+      return;
+    }
+
+    Animated.timing(previewReveal, {
+      toValue: 1,
+      duration: 280,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true
+    }).start();
+  }, [clip, previewReveal]);
 
   const resolveUrl = useCallback(
     async (candidateUrl = url) => {
+      debugStep('ui:check-pressed', {
+        candidateUrl,
+        currentStatus: status
+      });
+
       if (!candidateUrl.trim()) {
+        debugStep('ui:check-empty-url');
         setMessage('Paste an Instagram Reel/Post link first.');
         return;
       }
@@ -45,23 +72,35 @@ export default function App() {
 
       try {
         const metadata = await resolveClipFromUrl(candidateUrl);
+        debugStep('ui:resolve-success', {
+          normalizedUrl: metadata.normalizedUrl,
+          mediaKind: metadata.mediaKind,
+          captionLength: metadata.caption.length
+        });
         setClip(metadata);
         setCaption(metadata.caption);
         setUrl(metadata.normalizedUrl);
         setStatus('ready');
-        setMessage('Link is valid. Download support is the next implementation step.');
+        setMessage(metadata.mediaKind === 'video' ? 'Video found. Download it, then open Instagram.' : 'Media found. Download it, then open Instagram.');
       } catch (error) {
+        debugError('ui:resolve-failed', error, { candidateUrl });
         setClip(null);
         setCaption('');
         setStatus(error instanceof UnsupportedLocalExtractionError ? 'unsupported' : 'error');
         setMessage(error instanceof Error ? error.message : 'Could not resolve this link.');
       }
     },
-    [url]
+    [status, url]
   );
 
   const pasteFromClipboard = useCallback(async () => {
+    debugStep('ui:paste-pressed');
     const clipboardText = await Clipboard.getStringAsync();
+    debugStep('ui:clipboard-read', {
+      hasText: Boolean(clipboardText.trim()),
+      textLength: clipboardText.length
+    });
+
     if (!clipboardText.trim()) {
       setMessage('Clipboard is empty.');
       return;
@@ -72,6 +111,12 @@ export default function App() {
   }, [resolveUrl]);
 
   const downloadCurrentClip = useCallback(async () => {
+    debugStep('ui:download-pressed', {
+      hasClip: Boolean(clip),
+      status,
+      shortcode: clip?.shortcode
+    });
+
     if (!clip) {
       setMessage('Resolve a link before downloading.');
       return;
@@ -82,23 +127,67 @@ export default function App() {
 
     try {
       const downloaded = await downloadClip({ ...clip, caption });
+      debugStep('ui:download-success', {
+        localFileUri: downloaded.localFileUri,
+        captionLength: caption.length
+      });
       setDownloadedClip(downloaded);
       setStatus('downloaded');
-      setMessage('Video is ready. Caption copied before opening Instagram.');
+      setMessage('Media downloaded. Caption will be copied before opening Instagram.');
     } catch (error) {
+      debugError('ui:download-failed', error, { shortcode: clip.shortcode });
       setStatus(error instanceof UnsupportedLocalExtractionError ? 'unsupported' : 'error');
       setMessage(error instanceof Error ? error.message : 'Download failed.');
     }
-  }, [caption, clip]);
+  }, [caption, clip, status]);
 
-  const handoffToInstagram = useCallback(async () => {
+  const downloadAndOpenInstagram = useCallback(async () => {
+    debugStep('ui:open-instagram-pressed', {
+      hasClip: Boolean(clip),
+      hasDownloadedClip: Boolean(downloadedClip),
+      status
+    });
+
+    if (!clip) {
+      setMessage('Resolve a link before opening Instagram.');
+      return;
+    }
+
+    let clipToShare = downloadedClip;
+
+    if (!clipToShare) {
+      setStatus('downloading');
+      setMessage('Downloading media before opening Instagram...');
+
+      try {
+        clipToShare = await downloadClip({ ...clip, caption });
+        debugStep('ui:auto-download-success', {
+          localFileUri: clipToShare.localFileUri,
+          shortcode: clipToShare.shortcode
+        });
+        setDownloadedClip(clipToShare);
+        setStatus('downloaded');
+      } catch (error) {
+        debugError('ui:auto-download-failed', error, { shortcode: clip.shortcode });
+        setStatus(error instanceof UnsupportedLocalExtractionError ? 'unsupported' : 'error');
+        setMessage(error instanceof Error ? error.message : 'Download failed.');
+        return;
+      }
+    }
+
     await copyCaption(caption);
-    await openInstagramComposer(downloadedClip?.localFileUri);
-  }, [caption, downloadedClip]);
+    setMessage('Caption copied. Opening share sheet for Instagram.');
+    await openInstagramComposer(clipToShare.localFileUri);
+    debugStep('ui:open-instagram-complete');
+  }, [caption, clip, downloadedClip, status]);
 
   useEffect(() => {
     const handleUrl = ({ url: incomingUrl }: { url: string }) => {
-      if (!incomingUrl) {
+      debugStep('ui:incoming-link', { incomingUrl });
+      rememberBackendHostFromUrl(incomingUrl);
+
+      if (!incomingUrl || !isInstagramUrl(incomingUrl)) {
+        debugStep('ui:incoming-link-ignored', { incomingUrl });
         return;
       }
 
@@ -117,8 +206,6 @@ export default function App() {
     return () => subscription.remove();
   }, [resolveUrl]);
 
-  const showDownloadNotice = status === 'ready' || status === 'unsupported';
-
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
@@ -127,17 +214,28 @@ export default function App() {
         style={styles.keyboardAvoidingView}
       >
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <View style={styles.header}>
-            <View>
-              <Text style={styles.kicker}>Local clip handoff</Text>
-              <Text style={styles.title}>Insta Clip</Text>
+          <View style={styles.hero}>
+            <View style={styles.heroTop}>
+              <View style={styles.heroCopy}>
+                <Text style={styles.kicker}>Local clip handoff</Text>
+                <Text style={styles.title}>Insta Clip</Text>
+                <Text style={styles.subtitle}>
+                  Turn a copied Instagram Reel or Post link into a local video, caption, and share-ready handoff.
+                </Text>
+              </View>
+              <View style={styles.heroMark}>
+                <MaterialCommunityIcons name="instagram" size={28} color="#161616" />
+              </View>
             </View>
-            <View style={styles.headerIcon}>
-              <MaterialCommunityIcons name="instagram" size={28} color="#161616" />
+
+            <View style={styles.heroMetaRow}>
+              <MetaPill icon="cellphone-link" label={downloadedClip ? 'Cached' : 'Phone local'} />
+              <MetaPill icon="shield-check-outline" label="No login" />
+              <MetaPill icon="play-circle-outline" label="Reel ready" />
             </View>
           </View>
 
-          <View style={styles.panel}>
+          <View style={styles.surface}>
             <Text style={styles.label}>Instagram link</Text>
             <TextInput
               autoCapitalize="none"
@@ -168,17 +266,39 @@ export default function App() {
             </View>
           </View>
 
-          <View style={styles.statusPanel}>
-            <StatusBadge status={status} />
+          <View style={styles.banner}>
+            <View style={styles.bannerRow}>
+              <StatusBadge status={status} />
+              <Text style={styles.bannerMeta}>{clip ? clip.postType.toUpperCase() : 'READY'}</Text>
+            </View>
             <Text style={styles.message}>{message}</Text>
           </View>
 
           {clip ? (
-            <View style={styles.panel}>
+            <Animated.View
+              style={[
+                styles.surface,
+                styles.previewSurface,
+                {
+                  opacity: previewReveal,
+                  transform: [
+                    {
+                      translateY: previewReveal.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [14, 0]
+                      })
+                    }
+                  ]
+                }
+              ]}
+            >
               <View style={styles.previewHeader}>
-                <View>
+                <View style={styles.previewHeaderCopy}>
                   <Text style={styles.label}>Preview</Text>
                   <Text style={styles.previewTitle}>{clip.title}</Text>
+                  <Text style={styles.previewHint}>
+                    {clip.provider} link · {clip.mediaKind ?? 'media'} · {clip.shortcode ?? 'unknown'}
+                  </Text>
                 </View>
                 <View style={styles.typeBadge}>
                   <Text style={styles.typeBadgeText}>{clip.postType}</Text>
@@ -190,26 +310,47 @@ export default function App() {
                 <MetadataItem label="Shortcode" value={clip.shortcode ?? 'Unknown'} />
               </View>
 
-              <Text style={styles.label}>Caption</Text>
+              {clip.thumbnailUrl ? (
+                <ImageBackground
+                  imageStyle={styles.thumbnailImage}
+                  resizeMode="cover"
+                  source={{ uri: clip.thumbnailUrl }}
+                  style={styles.thumbnail}
+                >
+                  <View style={styles.thumbnailTopRow}>
+                    <View style={styles.thumbnailBadge}>
+                      <MaterialCommunityIcons
+                        name={clip.mediaKind === 'video' ? 'play-circle-outline' : 'image-outline'}
+                        size={16}
+                        color="#ffffff"
+                      />
+                      <Text style={styles.thumbnailBadgeText}>{clip.mediaKind ?? 'media'}</Text>
+                    </View>
+                    <View style={styles.thumbnailBadgeSoft}>
+                      <Text style={styles.thumbnailBadgeSoftText}>{downloadedClip ? 'On device' : 'Preview'}</Text>
+                    </View>
+                  </View>
+                </ImageBackground>
+              ) : null}
+
+              <View style={styles.metadataGrid}>
+                <MetadataItem label="Media" value={clip.mediaKind ?? 'Unknown'} />
+                <MetadataItem label="Download" value={downloadedClip ? 'Ready' : 'Needed'} />
+              </View>
+
+              <View style={styles.captionHeader}>
+                <Text style={styles.label}>Caption</Text>
+                <Text style={styles.captionCount}>{captionLength} chars</Text>
+              </View>
               <TextInput
                 multiline
                 onChangeText={setCaption}
-                placeholder="Caption will appear here when local extraction supports it. You can type or paste one now."
+                placeholder="Caption was not found. You can type or paste one now."
                 placeholderTextColor="#8a8a8a"
                 style={[styles.input, styles.captionInput]}
                 textAlignVertical="top"
                 value={caption}
               />
-
-              {showDownloadNotice ? (
-                <View style={styles.notice}>
-                  <MaterialCommunityIcons name="information-outline" size={18} color="#57534e" />
-                  <Text style={styles.noticeText}>
-                    Instagram media extraction is wired as a service boundary. The next step is adding the Android
-                    local extractor or a direct media parser for public links.
-                  </Text>
-                </View>
-              ) : null}
 
               <View style={styles.actions}>
                 <IconButton
@@ -221,27 +362,34 @@ export default function App() {
                   variant="secondary"
                 />
                 <IconButton
+                  icon="content-copy"
+                  label="Copy Caption"
+                  onPress={() => void copyCaption(caption)}
+                  variant="secondary"
+                />
+                <IconButton
                   icon="instagram"
                   label="Open Instagram"
-                  onPress={() => {
-                    if (!downloadedClip) {
-                      Alert.alert(
-                        'No downloaded video yet',
-                        'Caption will be copied, then Instagram will open. Media sharing needs local extraction to be completed.'
-                      );
-                    }
-
-                    void handoffToInstagram();
-                  }}
+                  loading={status === 'downloading'}
+                  onPress={() => void downloadAndOpenInstagram()}
                   variant="primary"
                 />
               </View>
-            </View>
+            </Animated.View>
           ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
+}
+
+function isInstagramUrl(candidateUrl: string): boolean {
+  try {
+    const parsedUrl = new URL(candidateUrl);
+    return ['instagram.com', 'www.instagram.com', 'm.instagram.com'].includes(parsedUrl.hostname.toLowerCase());
+  } catch {
+    return /(?:^|\s)(?:https?:\/\/)?(?:www\.)?instagram\.com\//i.test(candidateUrl);
+  }
 }
 
 type IconButtonProps = {
@@ -286,8 +434,8 @@ function StatusBadge({ status }: { status: ClipStatus }) {
     resolving: ['progress-clock', 'Checking'],
     ready: ['check-circle-outline', 'Ready'],
     downloading: ['download-circle-outline', 'Downloading'],
-    downloaded: ['check-decagram-outline', 'Downloaded'],
-    unsupported: ['alert-circle-outline', 'Needs extractor'],
+    downloaded: ['check-decagram-outline', 'Cached'],
+    unsupported: ['alert-circle-outline', 'Blocked'],
     error: ['close-circle-outline', 'Error']
   } satisfies Record<ClipStatus, [keyof typeof MaterialCommunityIcons.glyphMap, string]>;
 
@@ -312,74 +460,127 @@ function MetadataItem({ label, value }: { label: string; value: string }) {
   );
 }
 
+function MetaPill({ icon, label }: { icon: keyof typeof MaterialCommunityIcons.glyphMap; label: string }) {
+  return (
+    <View style={styles.metaPill}>
+      <MaterialCommunityIcons name={icon} size={14} color="#44403c" />
+      <Text style={styles.metaPillText}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#f6f4ef'
+    backgroundColor: '#f4f1ea'
   },
   keyboardAvoidingView: {
     flex: 1
   },
   content: {
-    gap: 16,
-    padding: 20,
-    paddingBottom: 36
+    gap: 14,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 28
   },
-  header: {
-    alignItems: 'center',
+  hero: {
+    backgroundColor: '#fffdf8',
+    borderColor: '#e4dccd',
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: 12,
+    padding: 16
+  },
+  heroTop: {
+    alignItems: 'flex-start',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 4
+    gap: 12
   },
-  kicker: {
-    color: '#57534e',
-    fontSize: 13,
-    fontWeight: '700',
-    textTransform: 'uppercase'
+  heroCopy: {
+    flex: 1
   },
-  title: {
-    color: '#161616',
-    fontSize: 34,
-    fontWeight: '800',
-    letterSpacing: 0,
-    marginTop: 2
-  },
-  headerIcon: {
+  heroMark: {
     alignItems: 'center',
     backgroundColor: '#ffffff',
-    borderColor: '#e2ddd2',
+    borderColor: '#d8d0bf',
     borderRadius: 8,
     borderWidth: 1,
     height: 48,
     justifyContent: 'center',
     width: 48
   },
-  panel: {
+  kicker: {
+    color: '#6b6256',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase'
+  },
+  title: {
+    color: '#111111',
+    fontSize: 38,
+    fontWeight: '900',
+    letterSpacing: 0,
+    marginTop: 4
+  },
+  subtitle: {
+    color: '#544f46',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 8
+  },
+  heroMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  metaPill: {
+    alignItems: 'center',
     backgroundColor: '#ffffff',
-    borderColor: '#e2ddd2',
+    borderColor: '#ddd5c5',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7
+  },
+  metaPillText: {
+    color: '#44403c',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  surface: {
+    backgroundColor: '#ffffff',
+    borderColor: '#ddd5c5',
     borderRadius: 8,
     borderWidth: 1,
     gap: 12,
     padding: 14
   },
+  previewSurface: {
+    gap: 14
+  },
   label: {
-    color: '#57534e',
-    fontSize: 13,
-    fontWeight: '700'
+    color: '#6b6256',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase'
   },
   input: {
     backgroundColor: '#fbfaf7',
-    borderColor: '#ded8cd',
+    borderColor: '#d8d0bf',
     borderRadius: 8,
     borderWidth: 1,
-    color: '#161616',
+    color: '#111111',
     fontSize: 15,
     minHeight: 48,
     paddingHorizontal: 12,
     paddingVertical: 10
   },
   captionInput: {
-    minHeight: 132
+    minHeight: 140,
+    lineHeight: 20
   },
   actions: {
     flexDirection: 'row',
@@ -396,11 +597,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12
   },
   primaryButton: {
-    backgroundColor: '#161616'
+    backgroundColor: '#111111'
   },
   secondaryButton: {
-    backgroundColor: '#f0ede6',
-    borderColor: '#ded8cd',
+    backgroundColor: '#f0ebe1',
+    borderColor: '#ddd5c5',
     borderWidth: 1
   },
   disabledButton: {
@@ -410,14 +611,14 @@ const styles = StyleSheet.create({
     opacity: 0.82
   },
   buttonText: {
-    color: '#161616',
+    color: '#111111',
     fontSize: 15,
     fontWeight: '800'
   },
   primaryButtonText: {
     color: '#ffffff'
   },
-  statusPanel: {
+  banner: {
     alignItems: 'flex-start',
     backgroundColor: '#efe8dc',
     borderColor: '#ded2bf',
@@ -425,6 +626,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: 8,
     padding: 14
+  },
+  bannerRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%'
+  },
+  bannerMeta: {
+    color: '#6b6256',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6
   },
   badge: {
     alignItems: 'center',
@@ -446,24 +659,34 @@ const styles = StyleSheet.create({
     lineHeight: 20
   },
   previewHeader: {
-    alignItems: 'center',
+    alignItems: 'flex-start',
     flexDirection: 'row',
     justifyContent: 'space-between'
   },
+  previewHeaderCopy: {
+    flex: 1,
+    paddingRight: 12
+  },
   previewTitle: {
-    color: '#161616',
+    color: '#111111',
     fontSize: 20,
     fontWeight: '800',
     marginTop: 2
   },
+  previewHint: {
+    color: '#6b6256',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 6
+  },
   typeBadge: {
-    backgroundColor: '#e8f1f2',
+    backgroundColor: '#e4eff0',
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 6
   },
   typeBadgeText: {
-    color: '#164e63',
+    color: '#165066',
     fontSize: 12,
     fontWeight: '800',
     textTransform: 'uppercase'
@@ -472,9 +695,56 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10
   },
+  thumbnail: {
+    alignItems: 'flex-start',
+    aspectRatio: 9 / 16,
+    backgroundColor: '#1d1d1d',
+    borderColor: '#d8d0bf',
+    borderRadius: 8,
+    borderWidth: 1,
+    width: '100%'
+  },
+  thumbnailImage: {
+    borderRadius: 8
+  },
+  thumbnailTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 10,
+    width: '100%'
+  },
+  thumbnailBadge: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    borderRadius: 8,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  thumbnailBadgeText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase'
+  },
+  thumbnailBadgeSoft: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  thumbnailBadgeSoftText: {
+    color: '#111111',
+    fontSize: 11,
+    fontWeight: '800'
+  },
   metadataItem: {
     backgroundColor: '#fbfaf7',
-    borderColor: '#ece6da',
+    borderColor: '#ddd5c5',
     borderRadius: 8,
     borderWidth: 1,
     flex: 1,
@@ -486,25 +756,19 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   metadataValue: {
-    color: '#161616',
+    color: '#111111',
     fontSize: 14,
     fontWeight: '800',
     marginTop: 4
   },
-  notice: {
-    alignItems: 'flex-start',
-    backgroundColor: '#fffbeb',
-    borderColor: '#fde68a',
-    borderRadius: 8,
-    borderWidth: 1,
+  captionHeader: {
+    alignItems: 'center',
     flexDirection: 'row',
-    gap: 8,
-    padding: 10
+    justifyContent: 'space-between'
   },
-  noticeText: {
-    color: '#57534e',
-    flex: 1,
-    fontSize: 13,
-    lineHeight: 18
+  captionCount: {
+    color: '#7c7467',
+    fontSize: 11,
+    fontWeight: '800'
   }
 });

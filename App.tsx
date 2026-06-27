@@ -9,12 +9,14 @@ import {
   Easing,
   ImageBackground,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  Switch,
   View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,6 +25,16 @@ import { copyCaption, openInstagramComposer } from './src/services/instagramShar
 import { ClipMetadata, ClipStatus, DownloadedClip } from './src/types/clip';
 import { debugError, debugStep } from './src/lib/debugLog';
 import { rememberBackendHostFromUrl } from './src/lib/backendUrl';
+import {
+  buildDefaultCta,
+  clearCaptionRefineSettings,
+  defaultCaptionRefineSettings,
+  loadCaptionRefineSettings,
+  normalizeHandle,
+  saveCaptionRefineSettings,
+  type CaptionRefineSettings
+} from './src/lib/captionRefineSettings';
+import { refineCaptionWithOpenRouter } from './src/services/openRouter';
 
 const exampleUrl = 'https://www.instagram.com/reel/SHORTCODE/';
 
@@ -34,9 +46,17 @@ export default function App() {
   const [downloadedClip, setDownloadedClip] = useState<DownloadedClip | null>(null);
   const [message, setMessage] = useState('Paste or share an Instagram Reel/Post link to begin.');
   const previewReveal = useRef(new Animated.Value(0)).current;
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [settings, setSettings] = useState<CaptionRefineSettings>(defaultCaptionRefineSettings);
+  const [settingsDraft, setSettingsDraft] = useState<CaptionRefineSettings>(defaultCaptionRefineSettings);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [refineLoading, setRefineLoading] = useState(false);
+  const [refineError, setRefineError] = useState('');
 
   const canResolve = useMemo(() => url.trim().length > 0 && status !== 'resolving', [status, url]);
   const captionLength = caption.trim().length;
+  const hasApiKey = settings.apiKey.trim().length > 0;
 
   useEffect(() => {
     previewReveal.setValue(0);
@@ -52,6 +72,39 @@ export default function App() {
       useNativeDriver: true
     }).start();
   }, [clip, previewReveal]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        const stored = await loadCaptionRefineSettings();
+        if (!mounted) {
+          return;
+        }
+
+        const normalized = {
+          ...defaultCaptionRefineSettings,
+          ...stored,
+          brandHandle: normalizeHandle(stored.brandHandle),
+          ctaText: stored.ctaText.trim() || buildDefaultCta(stored.brandHandle)
+        };
+
+        setSettings(normalized);
+        setSettingsDraft(normalized);
+      } catch (error) {
+        debugError('settings:load-failed', error);
+      } finally {
+        if (mounted) {
+          setSettingsLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const resolveUrl = useCallback(
     async (candidateUrl = url) => {
@@ -181,6 +234,105 @@ export default function App() {
     debugStep('ui:open-instagram-complete');
   }, [caption, clip, downloadedClip, status]);
 
+  const openSettings = useCallback(() => {
+    setSettingsDraft(settings);
+    setRefineError('');
+    setSettingsVisible(true);
+  }, [settings]);
+
+  const closeSettings = useCallback(() => {
+    if (settingsSaving) {
+      return;
+    }
+
+    setSettingsVisible(false);
+    setSettingsDraft(settings);
+    setRefineError('');
+  }, [settings, settingsSaving]);
+
+  const saveSettings = useCallback(async () => {
+    setSettingsSaving(true);
+    setRefineError('');
+
+    try {
+      const normalized: CaptionRefineSettings = {
+        ...settingsDraft,
+        apiKey: settingsDraft.apiKey.trim(),
+        model: settingsDraft.model.trim() || defaultCaptionRefineSettings.model,
+        brandHandle: normalizeHandle(settingsDraft.brandHandle),
+        ctaText: settingsDraft.ctaText.trim() || buildDefaultCta(settingsDraft.brandHandle)
+      };
+
+      await saveCaptionRefineSettings(normalized);
+      setSettings(normalized);
+      setSettingsDraft(normalized);
+      setSettingsVisible(false);
+      debugStep('settings:saved', {
+        model: normalized.model,
+        hasKey: Boolean(normalized.apiKey),
+        brandHandle: normalized.brandHandle
+      });
+    } catch (error) {
+      debugError('settings:save-failed', error);
+      setRefineError(error instanceof Error ? error.message : 'Could not save settings.');
+    } finally {
+      setSettingsSaving(false);
+    }
+  }, [settingsDraft]);
+
+  const clearSavedSettings = useCallback(async () => {
+    setSettingsSaving(true);
+    setRefineError('');
+
+    try {
+      await clearCaptionRefineSettings();
+      setSettings(defaultCaptionRefineSettings);
+      setSettingsDraft(defaultCaptionRefineSettings);
+      debugStep('settings:cleared');
+    } catch (error) {
+      debugError('settings:clear-failed', error);
+      setRefineError(error instanceof Error ? error.message : 'Could not clear settings.');
+    } finally {
+      setSettingsSaving(false);
+    }
+  }, []);
+
+  const refineCaption = useCallback(async () => {
+    if (!caption.trim()) {
+      setMessage('Add or load a caption before refining it.');
+      return;
+    }
+
+    if (!hasApiKey) {
+      setRefineError('Add your OpenRouter API key in Settings first.');
+      setSettingsVisible(true);
+      return;
+    }
+
+    setRefineLoading(true);
+    setRefineError('');
+    setMessage('Refining caption with OpenRouter...');
+
+    try {
+      const result = await refineCaptionWithOpenRouter(caption, settings, clip?.title);
+      const originalCaption = caption.trim();
+      const refinedCaption = result.refinedCaption.trim();
+      setCaption(refinedCaption || originalCaption);
+      setMessage('Caption refined. Review it, then copy or open Instagram.');
+      debugStep('ui:refine-success', {
+        refinedLength: result.refinedCaption.length,
+        shortLength: result.shortCaption.length,
+        hashtagCount: result.hashtags.length
+      });
+    } catch (error) {
+      debugError('ui:refine-failed', error);
+      setRefineError(error instanceof Error ? error.message : 'Refine failed.');
+      setMessage(error instanceof Error ? error.message : 'Refine failed.');
+    } finally {
+      setRefineLoading(false);
+    }
+  }, [caption, clip?.title, hasApiKey, settings]);
+
   useEffect(() => {
     const handleUrl = ({ url: incomingUrl }: { url: string }) => {
       debugStep('ui:incoming-link', { incomingUrl });
@@ -223,9 +375,9 @@ export default function App() {
                   Turn a copied Instagram Reel or Post link into a local video, caption, and share-ready handoff.
                 </Text>
               </View>
-              <View style={styles.heroMark}>
-                <MaterialCommunityIcons name="instagram" size={28} color="#161616" />
-              </View>
+              <Pressable accessibilityRole="button" onPress={openSettings} style={styles.heroMark}>
+                <MaterialCommunityIcons name="cog-outline" size={24} color="#161616" />
+              </Pressable>
             </View>
 
             <View style={styles.heroMetaRow}>
@@ -340,7 +492,16 @@ export default function App() {
 
               <View style={styles.captionHeader}>
                 <Text style={styles.label}>Caption</Text>
-                <Text style={styles.captionCount}>{captionLength} chars</Text>
+                <View style={styles.captionHeaderActions}>
+                  <Text style={styles.captionCount}>{captionLength} chars</Text>
+                  <TinyIconButton
+                    icon="auto-fix"
+                    label={refineLoading ? 'Refining' : 'Refine'}
+                    loading={refineLoading}
+                    onPress={() => void refineCaption()}
+                    disabled={refineLoading || settingsLoading}
+                  />
+                </View>
               </View>
               <TextInput
                 multiline
@@ -377,10 +538,21 @@ export default function App() {
                   variant="primary"
                 />
               </View>
+
             </Animated.View>
           ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
+      <SettingsModal
+        draft={settingsDraft}
+        error={refineError}
+        onChange={setSettingsDraft}
+        onClear={() => void clearSavedSettings()}
+        onClose={closeSettings}
+        onSave={() => void saveSettings()}
+        saving={settingsSaving}
+        visible={settingsVisible}
+      />
     </SafeAreaView>
   );
 }
@@ -476,6 +648,247 @@ function MetaPill({ icon, label }: { icon: keyof typeof MaterialCommunityIcons.g
   );
 }
 
+function TinyIconButton({
+  disabled,
+  icon,
+  label,
+  loading,
+  onPress
+}: {
+  disabled?: boolean;
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  label: string;
+  loading?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.tinyButton,
+        disabled ? styles.disabledButton : null,
+        pressed && !disabled ? styles.pressedButton : null
+      ]}
+    >
+      {loading ? (
+        <ActivityIndicator color="#111111" size="small" />
+      ) : (
+        <MaterialCommunityIcons name={icon} size={14} color="#111111" />
+      )}
+      <Text numberOfLines={1} style={styles.tinyButtonText}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function ChoiceChip<T extends string>({
+  label,
+  selected,
+  onPress
+}: {
+  label: T;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.choiceChip,
+        selected ? styles.choiceChipSelected : null,
+        pressed ? styles.pressedButton : null
+      ]}
+    >
+      <Text style={[styles.choiceChipText, selected ? styles.choiceChipTextSelected : null]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function SettingsModal({
+  draft,
+  error,
+  onChange,
+  onClear,
+  onClose,
+  onSave,
+  saving,
+  visible
+}: {
+  draft: CaptionRefineSettings;
+  error: string;
+  onChange: (settings: CaptionRefineSettings) => void;
+  onClear: () => void;
+  onClose: () => void;
+  onSave: () => void;
+  saving: boolean;
+  visible: boolean;
+}) {
+  return (
+    <Modal animationType="slide" onRequestClose={onClose} transparent visible={visible}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.modalKicker}>OpenRouter</Text>
+              <Text style={styles.modalTitle}>Caption refine settings</Text>
+            </View>
+            <Pressable accessibilityRole="button" onPress={onClose} style={styles.modalCloseButton}>
+              <MaterialCommunityIcons name="close" size={20} color="#111111" />
+            </Pressable>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
+            <Text style={styles.modalHint}>
+              Save your OpenRouter key locally on this device. Use the options below to control tone, hashtags,
+              music references, and the CTA line.
+            </Text>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>API key</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                onChangeText={(value) => onChange({ ...draft, apiKey: value })}
+                placeholder="sk-or-v1-..."
+                placeholderTextColor="#8a8a8a"
+                secureTextEntry
+                style={styles.input}
+                value={draft.apiKey}
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Model</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                onChangeText={(value) => onChange({ ...draft, model: value })}
+                placeholder="~openai/gpt-latest"
+                placeholderTextColor="#8a8a8a"
+                style={styles.input}
+                value={draft.model}
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Tone</Text>
+              <View style={styles.chipRow}>
+                {(['balanced', 'clean', 'playful', 'polished', 'bold'] as const).map((tone) => (
+                  <ChoiceChip
+                    key={tone}
+                    label={tone}
+                    onPress={() => onChange({ ...draft, tone })}
+                    selected={draft.tone === tone}
+                  />
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Length</Text>
+              <View style={styles.chipRow}>
+                {(['short', 'balanced', 'detailed'] as const).map((length) => (
+                  <ChoiceChip
+                    key={length}
+                    label={length}
+                    onPress={() => onChange({ ...draft, length })}
+                    selected={draft.length === length}
+                  />
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleCopy}>
+                <Text style={styles.toggleLabel}>Hashtags</Text>
+                <Text style={styles.toggleHint}>Let the model add hashtags if they fit.</Text>
+              </View>
+              <Switch
+                onValueChange={(value) => onChange({ ...draft, allowHashtags: value })}
+                value={draft.allowHashtags}
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleCopy}>
+                <Text style={styles.toggleLabel}>Music references</Text>
+                <Text style={styles.toggleHint}>Allow or avoid song/music mentions.</Text>
+              </View>
+              <Switch
+                onValueChange={(value) => onChange({ ...draft, allowMusicReferences: value })}
+                value={draft.allowMusicReferences}
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleCopy}>
+                <Text style={styles.toggleLabel}>Emoji</Text>
+                <Text style={styles.toggleHint}>Preserve emoji if they help the caption.</Text>
+              </View>
+              <Switch
+                onValueChange={(value) => onChange({ ...draft, preserveEmoji: value })}
+                value={draft.preserveEmoji}
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Username / handle</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                onChangeText={(value) => {
+                  const brandHandle = normalizeHandle(value);
+                  onChange({
+                    ...draft,
+                    brandHandle,
+                    ctaText: draft.ctaText.trim() || buildDefaultCta(brandHandle)
+                  });
+                }}
+                placeholder="@yourhandle"
+                placeholderTextColor="#8a8a8a"
+                style={styles.input}
+                value={draft.brandHandle}
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>CTA line</Text>
+              <TextInput
+                autoCapitalize="sentences"
+                autoCorrect
+                onChangeText={(value) => onChange({ ...draft, ctaText: value })}
+                placeholder="Follow @yourhandle for more updates."
+                placeholderTextColor="#8a8a8a"
+                style={styles.input}
+                value={draft.ctaText}
+              />
+            </View>
+
+            <View style={styles.modalActions}>
+              <Pressable accessibilityRole="button" onPress={onClear} style={styles.modalSecondaryButton}>
+                <Text style={styles.modalSecondaryButtonText}>Clear saved key</Text>
+              </Pressable>
+              <Pressable accessibilityRole="button" onPress={onSave} style={styles.modalPrimaryButton}>
+                {saving ? (
+                  <ActivityIndicator color="#ffffff" size="small" />
+                ) : (
+                  <Text style={styles.modalPrimaryButtonText}>Save settings</Text>
+                )}
+              </Pressable>
+            </View>
+
+            {error ? <Text style={styles.modalError}>{error}</Text> : null}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -556,6 +969,168 @@ const styles = StyleSheet.create({
     color: '#44403c',
     fontSize: 12,
     fontWeight: '700'
+  },
+  tinyButton: {
+    alignItems: 'center',
+    backgroundColor: '#f1ecdf',
+    borderColor: '#d9cfbc',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8
+  },
+  tinyButtonText: {
+    color: '#111111',
+    fontSize: 12,
+    fontWeight: '800'
+  },
+  choiceChip: {
+    alignItems: 'center',
+    backgroundColor: '#f4f1ea',
+    borderColor: '#dbd3c3',
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  choiceChipSelected: {
+    backgroundColor: '#111111',
+    borderColor: '#111111'
+  },
+  choiceChipText: {
+    color: '#44403c',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'capitalize'
+  },
+  choiceChipTextSelected: {
+    color: '#ffffff'
+  },
+  fieldGroup: {
+    gap: 8
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  toggleRow: {
+    alignItems: 'center',
+    backgroundColor: '#fbf8f0',
+    borderColor: '#e2d8c5',
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 12
+  },
+  toggleCopy: {
+    flex: 1,
+    paddingRight: 12
+  },
+  toggleLabel: {
+    color: '#111111',
+    fontSize: 13,
+    fontWeight: '800'
+  },
+  toggleHint: {
+    color: '#6b6256',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4
+  },
+  modalBackdrop: {
+    backgroundColor: 'rgba(17,17,17,0.55)',
+    flex: 1,
+    justifyContent: 'flex-end'
+  },
+  modalCard: {
+    backgroundColor: '#f4f1ea',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    maxHeight: '92%',
+    paddingHorizontal: 16,
+    paddingTop: 14
+  },
+  modalHeader: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12
+  },
+  modalCloseButton: {
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    borderColor: '#ddd5c5',
+    borderRadius: 8,
+    borderWidth: 1,
+    height: 40,
+    justifyContent: 'center',
+    width: 40
+  },
+  modalKicker: {
+    color: '#6b6256',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase'
+  },
+  modalTitle: {
+    color: '#111111',
+    fontSize: 22,
+    fontWeight: '900',
+    marginTop: 4
+  },
+  modalContent: {
+    gap: 14,
+    paddingBottom: 18,
+    paddingTop: 14
+  },
+  modalHint: {
+    color: '#4f473d',
+    fontSize: 13,
+    lineHeight: 19
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingTop: 4
+  },
+  modalSecondaryButton: {
+    alignItems: 'center',
+    backgroundColor: '#f0ebe1',
+    borderColor: '#ddd5c5',
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 12
+  },
+  modalSecondaryButtonText: {
+    color: '#111111',
+    fontSize: 14,
+    fontWeight: '800'
+  },
+  modalPrimaryButton: {
+    alignItems: 'center',
+    backgroundColor: '#111111',
+    borderRadius: 8,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 12
+  },
+  modalPrimaryButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800'
+  },
+  modalError: {
+    color: '#9b1c1c',
+    fontSize: 13,
+    lineHeight: 18
   },
   surface: {
     backgroundColor: '#ffffff',
@@ -775,6 +1350,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between'
+  },
+  captionHeaderActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8
   },
   captionCount: {
     color: '#7c7467',

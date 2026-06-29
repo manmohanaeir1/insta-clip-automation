@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: insta-clip-backend
+    runtime: docker
+    region: oregon
+    plan: free
+    dockerfile: ./backend/Dockerfile
+    dockerContext: .
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: NODE_ENV
+        value: production
+      - key: INSTAGRAM_COOKIES_B64
+        sync: false

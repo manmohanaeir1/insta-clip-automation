@@ -3,6 +3,7 @@ import { NativeModules } from 'react-native';
 import { debugStep } from './debugLog';
 
 const DEFAULT_BACKEND_PORT = '3000';
+const PRODUCTION_BACKEND_URL = 'https://insta-clip-automation-eb3y.onrender.com';
 let rememberedLanHost: string | undefined;
 
 export function rememberBackendHostFromUrl(url: string): void {
@@ -32,8 +33,8 @@ export function getBackendUrl(): string {
     return backendUrl;
   }
 
-  debugStep('backend-url:fallback-localhost', { backendUrl: `http://localhost:${DEFAULT_BACKEND_PORT}` });
-  return `http://localhost:${DEFAULT_BACKEND_PORT}`;
+  debugStep('backend-url:fallback-production', { backendUrl: PRODUCTION_BACKEND_URL });
+  return PRODUCTION_BACKEND_URL;
 }
 
 function getMetroHost(): string | undefined {

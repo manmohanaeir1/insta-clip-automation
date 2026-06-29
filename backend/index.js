@@ -19,25 +19,61 @@ if (!fs.existsSync(TRANSFER_DIR)) {
 app.use(cors());
 app.use(express.json());
 
+const COOKIES_FILE = path.join(__dirname, 'cookies.txt');
+let hasCookiesFile = fs.existsSync(COOKIES_FILE);
+
+// Check for cookies in environment variable (for Render deployment)
+if (!hasCookiesFile && process.env.INSTAGRAM_COOKIES_B64) {
+  const cookiesData = Buffer.from(process.env.INSTAGRAM_COOKIES_B64, 'base64').toString('utf8');
+  fs.writeFileSync(COOKIES_FILE, cookiesData, { mode: 0o600 });
+  hasCookiesFile = true;
+  console.log(`[SERVER] Loaded Instagram cookies from INSTAGRAM_COOKIES_B64 environment variable`);
+}
+
+if (hasCookiesFile) {
+  console.log(`[SERVER] Found cookies.txt - Instagram extraction will use authentication`);
+} else {
+  console.log(`[SERVER] No cookies.txt found - Instagram extraction will attempt unauthenticated access`);
+  console.log(`[SERVER] To enable authenticated access:`);
+  console.log(`[SERVER]   Option 1: Run ./export-instagram-cookies.sh locally`);
+  console.log(`[SERVER]   Option 2: Set INSTAGRAM_COOKIES_B64 environment variable`);
+}
+
+function buildAuthArgs(cookieBrowser) {
+  const args = [];
+  if (hasCookiesFile) {
+    args.push('--cookies');
+    args.push(COOKIES_FILE);
+  } else if (cookieBrowser) {
+    args.push('--cookies-from-browser');
+    args.push(cookieBrowser);
+  }
+  return args;
+}
+
 /**
  * POST /extract
  * Extract Instagram media info using yt-dlp (legacy simple endpoint)
- * Body: { url: "https://www.instagram.com/reel/..." }
+ * Body: { url: "https://www.instagram.com/reel/...", cookieBrowser: "firefox" }
  * Returns: { success: true, videoUrl, thumbnailUrl, caption, mediaKind }
  */
 app.post('/extract', async (req, res) => {
   try {
-    const { url } = req.body;
+    const { url, cookieBrowser } = req.body;
 
     if (!url) {
       return res.status(400).json({ success: false, error: 'URL is required' });
     }
 
-    console.log(`[EXTRACT] Processing: ${url}`);
+    console.log(`[EXTRACT] Processing: ${url} ${cookieBrowser ? `with cookies from ${cookieBrowser}` : ''}`);
 
     let output;
     try {
-      const result = await execFileP('yt-dlp', ['-j', '--no-warnings', url], {
+      const ytDlpArgs = ['-j', '--no-warnings'];
+      ytDlpArgs.push(...buildAuthArgs(cookieBrowser));
+      ytDlpArgs.push(url);
+
+      const result = await execFileP('yt-dlp', ytDlpArgs, {
         maxBuffer: 20 * 1024 * 1024,
         timeout: 120000
       });
@@ -66,23 +102,22 @@ app.post('/extract', async (req, res) => {
       console.log(`[EXTRACT] Downloading merged transfer file: ${transferTemplate}`);
 
       try {
-        await execFileP(
-          'yt-dlp',
-          [
-            '-f',
-            'bv*+ba/b[ext=mp4]/best',
-            '--merge-output-format',
-            'mp4',
-            '-o',
-            transferTemplate,
-            '--no-warnings',
-            url
-          ],
-          {
-            maxBuffer: 20 * 1024 * 1024,
-            timeout: 180000
-          }
-        );
+        const downloadArgs = [
+          '-f',
+          'bv*+ba/b[ext=mp4]/best',
+          '--merge-output-format',
+          'mp4',
+          '-o',
+          transferTemplate,
+          '--no-warnings'
+        ];
+        downloadArgs.push(...buildAuthArgs(cookieBrowser));
+        downloadArgs.push(url);
+
+        await execFileP('yt-dlp', downloadArgs, {
+          maxBuffer: 20 * 1024 * 1024,
+          timeout: 180000
+        });
       } catch (error) {
         console.error(`[EXTRACT] Transfer download failed:`, error && error.message ? error.message : error);
         return res.status(400).json({

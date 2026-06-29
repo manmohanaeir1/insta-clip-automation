@@ -9,6 +9,3 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 *.local
-
-# Instagram cookies (authentication - keep private)
-backend/cookies.txt

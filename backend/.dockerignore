@@ -2,5 +2,9 @@ node_modules
 npm-debug.log
 .git
 .gitignore
+.github
 storage
 README.md
+.DS_Store
+*.local
+.env.local

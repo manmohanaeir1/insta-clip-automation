@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "scheme": "instaclip",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -36,8 +37,11 @@
         }
       ]
     },
-    "plugins": [
-      "expo-secure-store"
-    ]
+    "extra": {
+      "eas": {
+        "projectId": "a7be52f4-01e6-4eaa-b412-f3def8155ff0"
+      }
+    },
+    "owner": "manmonan"
   }
 }

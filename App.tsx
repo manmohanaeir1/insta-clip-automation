@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as Linking from 'expo-linking';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, Component, ReactNode } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -38,7 +38,49 @@ import { refineCaptionWithOpenRouter } from './src/services/openRouter';
 
 const exampleUrl = 'https://www.instagram.com/reel/SHORTCODE/';
 
-export default function App() {
+class ErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('App crashed:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20, backgroundColor: '#fff' }}>
+          <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#d32f2f', marginBottom: 10 }}>
+            App Crashed
+          </Text>
+          <Text style={{ fontSize: 14, color: '#666', marginBottom: 15, textAlign: 'center' }}>
+            {this.state.error?.message || 'An unexpected error occurred'}
+          </Text>
+          <Pressable
+            onPress={() => this.setState({ hasError: false, error: null })}
+            style={{ backgroundColor: '#111', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}
+          >
+            <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>Retry</Text>
+          </Pressable>
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function AppContent() {
+  console.log('[APP] AppContent starting');
   const [url, setUrl] = useState('');
   const [caption, setCaption] = useState('');
   const [status, setStatus] = useState<ClipStatus>('idle');
@@ -358,7 +400,7 @@ export default function App() {
     return () => subscription.remove();
   }, [resolveUrl]);
 
-  return (
+return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="dark" />
       <KeyboardAvoidingView
@@ -554,6 +596,14 @@ export default function App() {
         visible={settingsVisible}
       />
     </SafeAreaView>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }
 
